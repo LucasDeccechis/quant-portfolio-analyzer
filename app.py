@@ -75,11 +75,17 @@ def procesar_archivo(file):
 
     col_entry_time = find_column(cols, ["tiempo de entrada", "entry time"])
     col_exit_time  = find_column(cols, ["tiempo de salida", "exit time"])
-    col_pnl = (
-        find_column(cols, ["con ganancia neto"]) or
-        find_column(cols, ["ganancia neto"]) or
-        find_column(cols, ["ganancias"])
-    )
+    col_pnl = find_column(cols, [
+        "ganancia",
+        "ganancias",
+        "ganancia neta",
+        "ganancia neto",
+        "net profit",
+        "profit",
+        "pnl",
+        "net pnl",
+        "realized pnl"
+    ])
 
     if not col_entry_time or not col_exit_time or not col_pnl:
         return None, "❌ No se detectó Entry Time, Exit Time o PnL"
@@ -1091,3 +1097,4 @@ with tab_corr:
         "Mantener la correlación promedio por DrawDown "
         "**≤ 0.20** para una diversificación robusta y escalable."
     )
+
