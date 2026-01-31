@@ -6,6 +6,19 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="QUANT ANALYZER | METODO F", layout="wide")
 
 # =========================
+# ⚙️ CONFIGURACIÓN GENERAL
+# =========================
+st.sidebar.markdown("## ⚙️ Configuración General")
+
+INITIAL_CAPITAL = st.sidebar.number_input(
+    "💰 Capital inicial de la cuenta ($)",
+    min_value=100.0,
+    value=10000.0,
+    step=500.0,
+    help="Capital inicial usado para Equity Curve, DrawDown y Monte Carlo (StrategyQuant style)"
+)
+
+# =========================
 # ESTILO
 # =========================
 st.markdown("""
@@ -57,14 +70,12 @@ def parse_datetime_mixed(series):
             dayfirst=False,
             infer_datetime_format=True
         )
-
     return dt
 
 # =========================
 # PARSER
 # =========================
 def procesar_archivo(file):
-
     if file.name.endswith(".csv"):
         df = pd.read_csv(file, sep=";", encoding="latin1")
     else:
@@ -73,34 +84,42 @@ def procesar_archivo(file):
     df.columns = [c.strip() for c in df.columns]
     cols = list(df.columns)
 
+    # Detectar columnas por sinónimos español / inglés
     col_entry_time = find_column(cols, ["tiempo de entrada", "entry time"])
     col_exit_time  = find_column(cols, ["tiempo de salida", "exit time"])
+    # PRIORIDAD: "Con Ganancia Neto" / "Cum. net profit" > otras
     col_pnl = (
-        find_column(cols, ["con ganancia neto"]) or
-        find_column(cols, ["ganancia neto"]) or
+        find_column(cols, ["con ganancia neto", "cum. net profit"]) or
+        find_column(cols, ["ganancia neto", "profit"]) or
         find_column(cols, ["ganancias"])
     )
-
+    col_strategy = find_column(cols, ["estrategia", "strategy"])
 
     if not col_entry_time or not col_exit_time or not col_pnl:
         return None, "❌ No se detectó Entry Time, Exit Time o PnL"
 
+    # Limpiar valores numéricos
     df[col_pnl] = df[col_pnl].apply(clean_numeric_value)
+    # Parsear fechas
     df[col_entry_time] = parse_datetime_mixed(df[col_entry_time])
     df[col_exit_time]  = parse_datetime_mixed(df[col_exit_time])
 
     df = df.dropna(subset=[col_entry_time, col_exit_time, col_pnl])
     df = df.sort_values(col_exit_time)
 
+    # Calcular PnL por trade
     pnl_acumulado = df[col_pnl].astype(float)
     pnl_trade = pnl_acumulado.diff()
     pnl_trade.iloc[0] = pnl_acumulado.iloc[0]
 
+    # Usar columna de estrategia si existe, sino usar nombre del archivo
+    strategy_name = df[col_strategy] if col_strategy else file.name
+
     out = pd.DataFrame({
         "EntryTime": df[col_entry_time],
         "Timestamp": df[col_exit_time],
-        "PnL": pnl_trade,
-        "Strategy": file.name
+        "PnL": pnl_trade,  # <-- Aquí usamos exclusivamente "Con Ganancia Neto / Cum. net profit"
+        "Strategy": strategy_name
     })
 
     return out.sort_values("Timestamp"), None
@@ -109,9 +128,6 @@ def procesar_archivo(file):
 # =========================
 # INGESTA
 # =========================
-dfs = []
-series = {}
-
 files = st.sidebar.file_uploader(
     "Subir reportes NinjaTrader (Trade List)",
     type=["csv", "xlsx"],
@@ -120,6 +136,8 @@ files = st.sidebar.file_uploader(
 
 if not files:
     st.stop()
+
+dfs = []
 
 for f in files:
     df, error = procesar_archivo(f)
@@ -131,11 +149,11 @@ for f in files:
     dfs.append(df)
 
 # =========================
-# 🔥 SELECTOR DE DÍAS
+# FILTRO POR DÍA
 # =========================
-st.sidebar.markdown("### 📅 Días activos")
-
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+st.sidebar.markdown("### 📅 Días activos")
 
 active_days = st.sidebar.multiselect(
     "Seleccionar días",
@@ -143,9 +161,6 @@ active_days = st.sidebar.multiselect(
     default=DAYS
 )
 
-# =========================
-# FILTRO GLOBAL POR DÍA
-# =========================
 all_trades = pd.concat(dfs)
 all_trades["DOW"] = all_trades["Timestamp"].dt.day_name()
 
@@ -159,9 +174,10 @@ filtered_trades = all_trades[
 series = {}
 
 for name, df in filtered_trades.groupby("Strategy"):
+    # Tomamos SOLO la columna PnL que representa "Con Ganancia Neto / Cum. net profit"
     daily = (
-        df.set_index("Timestamp")
-          .resample("D")["PnL"]
+        df.set_index("Timestamp")["PnL"]
+          .resample("D")
           .sum()
           .fillna(0)
     )
@@ -170,14 +186,9 @@ for name, df in filtered_trades.groupby("Strategy"):
 df_master = pd.DataFrame(series).fillna(0)
 df_master["PORTFOLIO"] = df_master.sum(axis=1)
 
-equity_curve = df_master["PORTFOLIO"].cumsum()
-portfolio_returns = df_master["PORTFOLIO"]
-
-
-
-    # =====================================================
-# ========================= TABS =======================
-# =====================================================
+# =========================
+# TABS
+# =========================
 tab_main, tab_corr = st.tabs([
     "📊 Análisis Completo",
     "🔗 Correlación de Portafolios"
@@ -191,15 +202,37 @@ with tab_main:
     st.subheader("📈 Equity Curve")
 
     fig = go.Figure()
+
+    # Equity del portfolio total (PORTFOLIO) con capital inicial
+    equity_curve = INITIAL_CAPITAL + df_master["PORTFOLIO"].cumsum()
+    fig.add_trace(go.Scatter(
+        x=df_master.index,
+        y=equity_curve,
+        name="PORTFOLIO TOTAL",
+        line=dict(width=3, color="#58a6ff")
+    ))
+
+    # Equity individual de cada estrategia
     for c in df_master.columns:
+        if c == "PORTFOLIO":
+            continue
         fig.add_trace(go.Scatter(
             x=df_master.index,
-            y=df_master[c].cumsum(),
-            name=c
+            y=INITIAL_CAPITAL + df_master[c].cumsum(),  # cada estrategia acumulada
+            name=f"{c} (estrategia)",
+            line=dict(dash="dot")
         ))
 
-    fig.update_layout(height=500)
-    st.plotly_chart(fig, width="stretch")
+    fig.update_layout(
+        height=500,
+        xaxis_title="Fecha",
+        yaxis_title="Equity ($)",
+        legend_title="Curvas",
+        template="plotly_dark"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
     # =========================
     # DRAWDOWN
@@ -553,68 +586,93 @@ with tab_main:
     c2.metric("Max Losing Streak", int(max_losing_streak))
     c3.metric("Time Under Water (días)", int(time_under_water))
 
-   # =====================================================
-    # 🎲 MONTE CARLO – Robustez de Secuencia
     # =====================================================
-    st.subheader("🎲 Monte Carlo – Robustez de Secuencia de Trades")
+    # 🎲 MONTE CARLO – StrategyQuant Style
+    # =====================================================
+    st.subheader("🎲 Monte Carlo – Robustez (StrategyQuant)")
 
-    mc_runs = 300
+    mc_runs = 500
+    TRADE_REMOVAL_PROB = 0.05
+    NOISE_STD_FACTOR = 0.05
+
     mc_equities = []
     mc_max_dd = []
     mc_final_equity = []
 
-    # Umbrales de riesgo (ajustables)
-    RUIN_THRESHOLD = -0.4    # -40%
-    DD_WARNING = -0.25       # -25%
-
-    initial_capital = 0.0
+    # Tomamos la columna de PnL que usamos para Equity
+    pnl_array = filtered_trades["PnL"].dropna().values
 
     for _ in range(mc_runs):
-        shuffled = pnl_trades.sample(frac=1).values
-        equity = initial_capital + np.cumsum(shuffled)
+        # Eliminación aleatoria de trades
+        mask = np.random.rand(len(pnl_array)) > TRADE_REMOVAL_PROB
+        sampled = pnl_array[mask]
+
+        if len(sampled) == 0:
+            continue
+
+        # Mezclar trades y agregar ruido
+        shuffled = np.random.permutation(sampled)
+        noise_std = np.abs(np.mean(shuffled)) * NOISE_STD_FACTOR
+        shuffled += np.random.normal(0, noise_std, size=len(shuffled))
+
+        # Equity simulado
+        equity = INITIAL_CAPITAL + np.cumsum(shuffled)
 
         peak = np.maximum.accumulate(equity)
-        drawdown = (equity - peak) / np.where(peak == 0, 1, peak)
+        drawdown = equity - peak
 
         mc_equities.append(equity)
         mc_max_dd.append(drawdown.min())
         mc_final_equity.append(equity[-1])
 
     # -------------------------------------
-    # DataFrames Monte Carlo
+    # Resultados Monte Carlo
     # -------------------------------------
-    mc_df = pd.DataFrame(mc_equities).T
+    mc_equity_df = pd.DataFrame(mc_equities).T  # columnas = simulaciones
 
     mc_stats = pd.DataFrame({
         "Final Equity": mc_final_equity,
         "Max Drawdown": mc_max_dd
     })
 
-    # -------------------------------------
-    # Percentiles clave
-    # -------------------------------------
-    p_equity = mc_stats["Final Equity"].quantile([0.05, 0.5, 0.95])
-    p_dd = mc_stats["Max Drawdown"].quantile([0.05, 0.5, 0.95])
+    # Añadimos columna de Profit neto
+    mc_stats["Net Profit"] = mc_stats["Final Equity"] - INITIAL_CAPITAL
+    # Número de simulación
+    mc_stats.index = np.arange(1, len(mc_stats) + 1)
+    mc_stats.index.name = "Simulación"
 
     # -------------------------------------
-    # Plot Monte Carlo (trayectorias)
+    # Plot Monte Carlo
     # -------------------------------------
     fig_mc = go.Figure()
 
-    for i in range(min(30, mc_df.shape[1])):
+    for i in range(min(40, mc_equity_df.shape[1])):
         fig_mc.add_trace(go.Scatter(
-            y=mc_df[i],
+            y=mc_equity_df[i],
             line=dict(width=1),
-            opacity=0.3,
+            opacity=0.25,
             showlegend=False
         ))
 
     fig_mc.update_layout(
-        height=420,
-        title="Monte Carlo – Trayectorias de Equity"
+        height=450,
+        title="Monte Carlo – StrategyQuant Robustness"
     )
 
     st.plotly_chart(fig_mc, width="stretch", key="montecarlo_equity")
+
+    # -------------------------------------
+    # Tabla de resultados individuales
+    # -------------------------------------
+    st.subheader("📋 Resultados de cada simulación")
+    st.dataframe(
+        mc_stats[["Net Profit", "Max Drawdown"]].style.format({
+            "Net Profit": "${:,.2f}",
+            "Max Drawdown": "${:,.2f}"
+        })
+    )
+
+
 
     # =====================================================
     # 🔥 STRESS TEST POR AÑO
@@ -636,44 +694,6 @@ with tab_main:
     st.plotly_chart(fig_year, width="stretch")
 
     st.dataframe(yearly.to_frame("PnL Anual"))
-
-    # =====================================================
-    # 🔁 WALK FORWARD ANALYSIS (SIMPLE)
-    # =====================================================
-    st.subheader("🔁 Walk-Forward Analysis (WFA)")
-
-    wfa_window = st.slider(
-        "Ventana WFA (días)",
-        min_value=60,
-        max_value=360,
-        value=120,
-        step=30
-    )
-
-    returns = df_master["PORTFOLIO"]
-
-    wfa_results = []
-    dates = returns.index
-
-    for i in range(wfa_window, len(returns) - wfa_window):
-        in_sample = returns.iloc[i - wfa_window:i]
-        out_sample = returns.iloc[i:i + wfa_window]
-
-        if in_sample.std() == 0:
-            continue
-
-        sharpe_in = in_sample.mean() / in_sample.std()
-        sharpe_out = out_sample.mean() / out_sample.std() if out_sample.std() != 0 else 0
-
-        wfa_results.append(sharpe_out)
-
-    wfa_series = pd.Series(wfa_results)
-
-    st.metric(
-        "Sharpe medio Out-of-Sample",
-        f"{wfa_series.mean():.2f}"
-    )
-
  
 
     # =====================================================
@@ -1092,5 +1112,3 @@ with tab_corr:
         "Mantener la correlación promedio por DrawDown "
         "**≤ 0.20** para una diversificación robusta y escalable."
     )
-
-
