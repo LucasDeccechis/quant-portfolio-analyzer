@@ -6,16 +6,6 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="QUANT ANALYZER | METODO F", layout="wide")
 
 # =========================
-# 🖼️ HEADER / LOGO
-# =========================
-st.image(
-    "assets\header.png",  # 👈 ruta de la imagen
-    use_container_width=True
-)
-
-st.markdown("---")
-
-# =========================
 # ⚙️ CONFIGURACIÓN GENERAL
 # =========================
 st.sidebar.markdown("## ⚙️ Configuración General")
@@ -1122,3 +1112,4 @@ with tab_corr:
         "Mantener la correlación promedio por DrawDown "
         "**≤ 0.20** para una diversificación robusta y escalable."
     )
+
