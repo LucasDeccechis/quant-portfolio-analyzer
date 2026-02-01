@@ -18,6 +18,8 @@ INITIAL_CAPITAL = st.sidebar.number_input(
     help="Capital inicial usado para Equity Curve, DrawDown y Monte Carlo (StrategyQuant style)"
 )
 
+st.markdown("---")
+
 # =========================
 # ESTILO
 # =========================
@@ -1112,4 +1114,3 @@ with tab_corr:
         "Mantener la correlación promedio por DrawDown "
         "**≤ 0.20** para una diversificación robusta y escalable."
     )
-
