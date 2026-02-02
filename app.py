@@ -589,59 +589,87 @@ with tab_main:
     c3.metric("Time Under Water (días)", int(time_under_water))
 
     # =====================================================
-    # 🎲 MONTE CARLO – StrategyQuant Style
+    # 🎲 MONTE CARLO – StrategyQuant
     # =====================================================
-    st.subheader("🎲 Monte Carlo – Robustez (StrategyQuant)")
+    st.subheader("🎲 Monte Carlo – StrategyQuant")
 
+    # ------------------------------
+    # Configuración SQ
+    # ------------------------------
     mc_runs = 500
-    TRADE_REMOVAL_PROB = 0.05
-    NOISE_STD_FACTOR = 0.05
+    SKIP_PROB = 0.05  # Random skip trades (5%)
 
+    pnl = filtered_trades["PnL"].dropna().values
+
+    # =====================================================
+    # 📌 Métricas ORIGINALES del sistema (baseline SQ)
+    # =====================================================
+
+    # Equity original (sin shuffle, sin skip)
+    orig_equity = INITIAL_CAPITAL + np.cumsum(pnl)
+
+    orig_peak = np.maximum.accumulate(orig_equity)
+    orig_drawdown = orig_equity - orig_peak
+
+    orig_max_dd = orig_drawdown.min()                    # $ Max DD original
+    orig_net = orig_equity[-1] - INITIAL_CAPITAL         # Net Profit original
+    orig_ret_dd = (
+        orig_net / abs(orig_max_dd)
+        if orig_max_dd < 0 else np.nan
+    )
+
+    # -------------------------------------
+    # Contenedores
+    # -------------------------------------
     mc_equities = []
-    mc_max_dd = []
-    mc_final_equity = []
-
-    # Tomamos la columna de PnL que usamos para Equity
-    pnl_array = filtered_trades["PnL"].dropna().values
+    mc_stats = []
 
     for _ in range(mc_runs):
-        # Eliminación aleatoria de trades
-        mask = np.random.rand(len(pnl_array)) > TRADE_REMOVAL_PROB
-        sampled = pnl_array[mask]
+
+        # 1️⃣ Shuffle trades
+        shuffled = np.random.permutation(pnl)
+
+        # 2️⃣ Random skip trades
+        mask = np.random.rand(len(shuffled)) > SKIP_PROB
+        sampled = shuffled[mask]
 
         if len(sampled) == 0:
             continue
 
-        # Mezclar trades y agregar ruido
-        shuffled = np.random.permutation(sampled)
-        noise_std = np.abs(np.mean(shuffled)) * NOISE_STD_FACTOR
-        shuffled += np.random.normal(0, noise_std, size=len(shuffled))
-
-        # Equity simulado
-        equity = INITIAL_CAPITAL + np.cumsum(shuffled)
+        # 3️⃣ Equity
+        equity = INITIAL_CAPITAL + np.cumsum(sampled)
 
         peak = np.maximum.accumulate(equity)
         drawdown = equity - peak
 
+        max_dd = drawdown.min()
+        net_profit = equity[-1] - INITIAL_CAPITAL
+        ret_dd = net_profit / abs(max_dd) if max_dd < 0 else np.nan
+        exp = net_profit / len(sampled)
+
         mc_equities.append(equity)
-        mc_max_dd.append(drawdown.min())
-        mc_final_equity.append(equity[-1])
+        mc_stats.append({
+            "Net Profit": net_profit,
+            "Max DD $": max_dd,
+            "Ret/DD": ret_dd,
+            "Exp": exp
+        })
 
     # -------------------------------------
-    # Resultados Monte Carlo
+    # DataFrames
     # -------------------------------------
-    mc_equity_df = pd.DataFrame(mc_equities).T  # columnas = simulaciones
+    mc_equity_df = pd.DataFrame(mc_equities).T
+    mc_stats_df = pd.DataFrame(mc_stats)
 
-    mc_stats = pd.DataFrame({
-        "Final Equity": mc_final_equity,
-        "Max Drawdown": mc_max_dd
-    })
+    # -------------------------------------
+    # Confidence Levels (StrategyQuant)
+    # -------------------------------------
+    percentiles = [0, 5, 10, 30, 50, 70, 90, 95, 100]
 
-    # Añadimos columna de Profit neto
-    mc_stats["Net Profit"] = mc_stats["Final Equity"] - INITIAL_CAPITAL
-    # Número de simulación
-    mc_stats.index = np.arange(1, len(mc_stats) + 1)
-    mc_stats.index.name = "Simulación"
+    sq_table = pd.DataFrame({
+        col: np.percentile(mc_stats_df[col].dropna(), percentiles)
+        for col in mc_stats_df.columns
+    }, index=[f"{p}%" for p in percentiles])
 
     # -------------------------------------
     # Plot Monte Carlo
@@ -650,7 +678,7 @@ with tab_main:
 
     for i in range(min(40, mc_equity_df.shape[1])):
         fig_mc.add_trace(go.Scatter(
-            y=mc_equity_df[i],
+            y=mc_equity_df.iloc[:, i],
             line=dict(width=1),
             opacity=0.25,
             showlegend=False
@@ -658,21 +686,56 @@ with tab_main:
 
     fig_mc.update_layout(
         height=450,
-        title="Monte Carlo – StrategyQuant Robustness"
+        title="Monte Carlo – Equity Runs",
+        xaxis_title="Trades",
+        yaxis_title="Equity"
     )
 
-    st.plotly_chart(fig_mc, width="stretch", key="montecarlo_equity")
+    st.plotly_chart(fig_mc, width="stretch")
 
     # -------------------------------------
-    # Tabla de resultados individuales
+    # Tabla StrategyQuant
     # -------------------------------------
-    st.subheader("📋 Resultados de cada simulación")
+    st.subheader("📊 Confidence Levels")
+
     st.dataframe(
-        mc_stats[["Net Profit", "Max Drawdown"]].style.format({
+        sq_table.style.format({
             "Net Profit": "${:,.2f}",
-            "Max Drawdown": "${:,.2f}"
+            "Max DD $": "${:,.2f}",
+            "Ret/DD": "{:.2f}",
+            "Exp": "${:,.2f}"
         })
     )
+
+    # =====================================================
+    # 🧠 Resumen de Robustez (StrategyQuant Style)
+    # =====================================================
+    st.subheader("🧠 Análisis de Robustez")
+
+    p95 = sq_table.loc["95%"]
+
+    robust = (
+        p95["Net Profit"] > 0 and
+        p95["Net Profit"] / orig_net > 0.3 and
+        p95["Ret/DD"] / orig_ret_dd > 0.3
+    )
+
+    if robust:
+        st.success(
+            "✅ **La estrategia es ROBUSTA**\n\n"
+            "- Mantiene Net Profit positivo incluso al 95%\n"
+            "- El Ret/DD sigue siendo saludable\n"
+            "- El comportamiento es consistente bajo perturbaciones aleatorias\n\n"
+            "La estrategia tolera cambios en el orden y omisión de trades."
+        )
+    else:
+        st.warning(
+            "⚠️ **La estrategia NO es robusta**\n\n"
+            "- En escenarios adversos (95%) pierde rentabilidad\n"
+            "- El drawdown se deteriora significativamente\n"
+            "- El retorno ajustado por riesgo no es estable\n\n"
+            "La estrategia depende fuertemente del orden exacto de los trades."
+        )
 
 
 
