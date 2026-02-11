@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import re  # ✅ agregado (solo para autodetección CSV)
 
 st.set_page_config(page_title="QUANT ANALYZER | METODO F", layout="wide")
 
@@ -30,6 +31,76 @@ st.markdown("""
 div[data-testid="stMetricValue"] { color: #58a6ff; font-family: 'Courier New', monospace; }
 </style>
 """, unsafe_allow_html=True)
+
+# =========================
+# ✅ CSV AUTO-REGIÓN (solo lectura)
+# =========================
+def _detect_csv_dialect_from_sample(sample_text: str):
+    """
+    Detecta separador y decimal para casos típicos:
+      - AR/ES: sep=';' decimal=','
+      - US/CO: sep=',' decimal='.'
+    """
+    candidate_seps = [';', ',', '\t', '|']
+    lines = [ln for ln in sample_text.splitlines() if ln.strip()][:50]
+    if not lines:
+        return (";", ",")  # fallback AR
+
+    # Elegir separador por "densidad" (mediana de ocurrencias)
+    sep_scores = {}
+    for sep in candidate_seps:
+        counts = [ln.count(sep) for ln in lines[:30]]
+        counts_sorted = sorted(counts)
+        median = counts_sorted[len(counts_sorted)//2] if counts_sorted else 0
+        sep_scores[sep] = median
+
+    sep = max(sep_scores, key=sep_scores.get)
+    if sep_scores.get(sep, 0) == 0:
+        sep = ";"  # fallback
+
+    joined = "\n".join(lines)
+    comma_dec = len(re.findall(r"\d+,\d{1,6}\b", joined))
+    dot_dec   = len(re.findall(r"\d+\.\d{1,6}\b", joined))
+
+    if comma_dec > dot_dec:
+        decimal = ","
+    elif dot_dec > comma_dec:
+        decimal = "."
+    else:
+        # Si no es claro, inferir por separador:
+        decimal = "," if sep == ";" else "."
+
+    return (sep, decimal)
+
+def read_csv_any_locale(file_obj):
+    """
+    Lee un CSV detectando separador/decimal + encoding (utf-8-sig / latin1),
+    sin modificar el resto del pipeline.
+    Funciona con st.file_uploader (file-like).
+    """
+    for enc in ("utf-8-sig", "latin1"):
+        try:
+            file_obj.seek(0)
+            head_bytes = file_obj.read(200_000)
+            file_obj.seek(0)
+
+            sample_text = head_bytes.decode(enc, errors="replace")
+            sep, dec = _detect_csv_dialect_from_sample(sample_text)
+
+            df = pd.read_csv(
+                file_obj,
+                sep=sep,
+                encoding=enc,
+                decimal=dec,
+                engine="python"
+            )
+            return df
+        except Exception:
+            continue
+
+    # último fallback
+    file_obj.seek(0)
+    return pd.read_csv(file_obj, engine="python")
 
 # =========================
 # HELPERS
@@ -79,7 +150,9 @@ def parse_datetime_mixed(series):
 # =========================
 def procesar_archivo(file):
     if file.name.endswith(".csv"):
-        df = pd.read_csv(file, sep=";", encoding="latin1")
+        # ✅ Antes: pd.read_csv(file, sep=";", encoding="latin1")
+        # ✅ Ahora: autodetección de región (sep/decimal) + encoding fallback
+        df = read_csv_any_locale(file)
     else:
         df = pd.read_excel(file)
 
@@ -187,6 +260,8 @@ for name, df in filtered_trades.groupby("Strategy"):
 
 df_master = pd.DataFrame(series).fillna(0)
 df_master["PORTFOLIO"] = df_master.sum(axis=1)
+
+
 
 # =========================
 # TABS
@@ -591,7 +666,7 @@ with tab_main:
     # =====================================================
     # 🎲 MONTE CARLO – StrategyQuant
     # =====================================================
-    st.subheader("🎲 Monte Carlo – StrategyQuant")
+    st.subheader("🎲 Monte Carlo")
 
     # ------------------------------
     # Configuración SQ
