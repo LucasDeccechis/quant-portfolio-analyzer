@@ -131,8 +131,7 @@ def parse_datetime_mixed(series):
     dt = pd.to_datetime(
         s,
         errors="coerce",
-        dayfirst=True,
-        infer_datetime_format=True
+        dayfirst=True
     )
 
     mask = dt.isna()
@@ -140,8 +139,7 @@ def parse_datetime_mixed(series):
         dt.loc[mask] = pd.to_datetime(
             s[mask],
             errors="coerce",
-            dayfirst=False,
-            infer_datetime_format=True
+            dayfirst=False
         )
     return dt
 
